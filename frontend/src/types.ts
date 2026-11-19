@@ -52,3 +52,22 @@ export type InlineSuggestion = {
 export type CodeApplyAction = "replace" | "append" | "new-file";
 
 export type ConsoleTab = "terminal" | "output";
+
+export type StyleProfile = {
+  status: "idle" | "indexing" | "ready" | "failed";
+  updatedAt?: string | null;
+  conventions?: {
+    oopAndPatterns?: Record<string, any>;
+    errorHandling?: Record<string, any>;
+    edgeCasesAndGuards?: Record<string, any>;
+    namingAndTypes?: Record<string, any>;
+  };
+  effectiveConventions?: Record<string, any>;
+  exemplars?: Array<{
+    category: string;
+    symbolPath: string;
+    filePath: string;
+    code?: string;
+  }>;
+  userOverrides?: Record<string, any>;
+};

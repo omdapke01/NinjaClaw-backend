@@ -13,6 +13,7 @@ import { spawn } from "node:child_process";
 import { Server } from "socket.io";
 import { MongoClient } from "mongodb";
 import { v4 as uuid } from "uuid";
+import { StyleService } from "./intelligence/styleService.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,6 +35,7 @@ let usersCollection;
 let projectsCollection;
 let filesCollection;
 let foldersCollection;
+let styleService;
 
 const app = express();
 const server = createServer(app);
@@ -649,6 +651,32 @@ async function generateGeminiReply({ message, project, activeFilePath, activeFil
   const lowerMessage = String(message || "").toLowerCase();
   const isCompetitivePrompt =
     /(leetcode|gfg|geeksforgeeks|codeforces|hackerrank|practice problem|dsa|replace o's with x's|surrounded regions)/.test(lowerMessage);
+
+  let styleSection = "";
+  if (styleService && project?.id) {
+    try {
+      const profile = await styleService.getStyleProfile(project.id, project.ownerId);
+      if (profile && profile.status === "ready") {
+        const conv = profile.effectiveConventions || profile.conventions || {};
+        const exemplarBlocks = (profile.exemplars || []).map(
+          (e) => `[Exemplar ${e.category} - ${e.symbolPath} (${e.filePath})]:\n${e.code}\n`
+        ).join("\n");
+
+        styleSection = [
+          "",
+          "=== CODEBASE STYLE DNA (Match these exact project conventions) ===",
+          `- Architecture: ${conv.oopAndPatterns?.architecturalStyle || "layered"} (${conv.oopAndPatterns?.primaryParadigm || "standard"}, DI: ${conv.oopAndPatterns?.dependencyInjection || "none"})`,
+          `- Error Handling: ${conv.errorHandling?.strategy || "standard"} (Classes: ${(conv.errorHandling?.customErrorClasses || []).join(", ") || "none"})`,
+          `- Guards & Edge Cases: ${conv.edgeCasesAndGuards?.guardClauseStyle || "early_return"} (Validation: ${conv.edgeCasesAndGuards?.validationApproach || "manual"})`,
+          `- Naming: variables/functions: ${conv.namingAndTypes?.variableCasing || "camelCase"}, classes: ${conv.namingAndTypes?.classCasing || "PascalCase"}, strictness: ${conv.namingAndTypes?.typeStrictness || "standard"}`,
+          exemplarBlocks ? `\n=== GOLDEN CODE EXEMPLARS (Reference implementations from this codebase) ===\n${exemplarBlocks}` : ""
+        ].filter(Boolean).join("\n");
+      }
+    } catch {
+      // Non-fatal if style profile fetch fails
+    }
+  }
+
   const prompt = [
     "You are NinjaClaw AI, a strong coding assistant inside a browser IDE.",
     "Respond in a practical, product-quality way.",
@@ -668,6 +696,7 @@ async function generateGeminiReply({ message, project, activeFilePath, activeFil
     `Project: ${project?.name || "Unknown project"}`,
     `Active file: ${activeFilePath || "None"}`,
     `Active language: ${runtimeLabel(activeLanguage)}`,
+    styleSection,
     "",
     "Project files:",
     fileList,
@@ -795,6 +824,37 @@ app.delete("/api/projects/:projectId", authMiddleware, async (request, response)
   response.json({ projects });
 });
 
+app.get("/api/projects/:projectId/style-profile", authMiddleware, async (request, response) => {
+  const ownedProject = await getOwnedProject(request.params.projectId, request.user.sub);
+  if (!ownedProject) return response.status(404).json({ message: "Project not found" });
+
+  const profile = await styleService?.getStyleProfile(request.params.projectId, request.user.sub);
+  response.json({ profile });
+});
+
+app.patch("/api/projects/:projectId/style-profile/overrides", authMiddleware, async (request, response) => {
+  const ownedProject = await getOwnedProject(request.params.projectId, request.user.sub);
+  if (!ownedProject) return response.status(404).json({ message: "Project not found" });
+
+  const profile = await styleService?.updateOverrides(
+    request.params.projectId,
+    request.user.sub,
+    request.body.overrides || {}
+  );
+  response.json({ profile });
+});
+
+app.post("/api/projects/:projectId/style-profile/reindex", authMiddleware, async (request, response) => {
+  const ownedProject = await getOwnedProject(request.params.projectId, request.user.sub);
+  if (!ownedProject) return response.status(404).json({ message: "Project not found" });
+
+  styleService?.indexProjectStyle(request.params.projectId, request.user.sub, true).catch((err) => {
+    console.error("[reindex] Background style indexing error:", err.message);
+  });
+
+  response.json({ ok: true, message: "Style re-indexing initiated", status: "indexing" });
+});
+
 app.get("/api/projects/:projectId/files", authMiddleware, async (request, response) => {
   const ownedProject = await getOwnedProject(request.params.projectId, request.user.sub);
   if (!ownedProject) return response.status(404).json({ message: "Project not found" });
@@ -888,6 +948,9 @@ app.post("/api/projects/:projectId/files", authMiddleware, async (request, respo
   );
 
   await emitProjectUpdate(request.user.sub, `Created ${normalizedPath}`);
+  if (!normalizedPath.startsWith(".ninjaclaw/")) {
+    styleService?.indexProjectStyle(request.params.projectId, request.user.sub, false).catch(() => {});
+  }
   response.status(201).json({ ok: true });
 });
 
@@ -908,6 +971,9 @@ app.put("/api/projects/:projectId/files", authMiddleware, async (request, respon
   );
 
   await emitProjectUpdate(request.user.sub, `Saved ${normalizedPath}`);
+  if (!normalizedPath.startsWith(".ninjaclaw/")) {
+    styleService?.indexProjectStyle(request.params.projectId, request.user.sub, false).catch(() => {});
+  }
   response.json({ ok: true });
 });
 
@@ -1046,6 +1112,14 @@ app.post("/api/ai/suggest", authMiddleware, async (request, response) => {
 async function startServer() {
   await fs.mkdir(tempRootDir, { recursive: true });
   await initMongo();
+  styleService = new StyleService({
+    projectsCollection,
+    filesCollection,
+    io,
+    tempRootDir,
+    geminiApiKey: GEMINI_API_KEY,
+    geminiModel: GEMINI_MODEL
+  });
   await migrateLegacyStorageIfNeeded();
   server.listen(PORT, () => {
     console.log(`NinjaClaw backend listening on http://localhost:${PORT}`);

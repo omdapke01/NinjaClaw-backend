@@ -21,7 +21,7 @@ import {
   simulateCodeRun
 } from "./demo";
 import { getLanguageMeta, inferLanguageFromPath } from "./lib";
-import type { AiAction, ChatMessage, CodeApplyAction, ConsoleTab, EditorCursorContext, FlatFile, LanguageOption, Project, User } from "./types";
+import type { AiAction, ChatMessage, CodeApplyAction, ConsoleTab, EditorCursorContext, FlatFile, LanguageOption, Project, StyleProfile, User } from "./types";
 
 const initialLogs = [
   "[NinjaClaw] Workspace updates channel connected.",
@@ -73,6 +73,8 @@ export default function App() {
   });
   const [openMenu, setOpenMenu] = useState<"file" | "edit" | null>(null);
   const [resizingAiPanel, setResizingAiPanel] = useState(false);
+  const [styleProfile, setStyleProfile] = useState<StyleProfile | null>(null);
+  const [isIndexingStyle, setIsIndexingStyle] = useState(false);
 
   const activeLanguageLabel = useMemo(() => getLanguageMeta(language).label, [language]);
 
@@ -163,8 +165,37 @@ export default function App() {
         await loadFiles(token, activeProject, activeFile || undefined);
       }
     });
+
+    socket.on("style:progress", (event: { changedFiles: number }) => {
+      setIsIndexingStyle(true);
+      pushOutputLogs([`[Style DNA] Analyzing ${event.changedFiles} modified files with Tree-sitter...`]);
+    });
+
+    socket.on("style:completed", async (event: { exemplarCount: number }) => {
+      setIsIndexingStyle(false);
+      if (activeProject && token) {
+        const res = await api.getStyleProfile(token, activeProject.id).catch(() => null);
+        if (res?.profile) {
+          setStyleProfile(res.profile);
+          pushOutputLogs([`[Style DNA] Codebase Style DNA updated (${event.exemplarCount} exemplars anchored)`]);
+        }
+      }
+    });
+
+    socket.on("style:failed", (event: { error: string }) => {
+      setIsIndexingStyle(false);
+      pushOutputLogs([`[Style DNA] Indexing failed: ${event.error}`]);
+    });
+
     return () => socket.disconnect();
-  }, [token, activeProject?.id, activeFile, demoMode, pushTerminalLogs]);
+  }, [token, activeProject?.id, activeFile, demoMode, pushTerminalLogs, pushOutputLogs]);
+
+  useEffect(() => {
+    if (!token || !activeProject?.id || demoMode) return;
+    api.getStyleProfile(token, activeProject.id).then((res) => {
+      if (res?.profile) setStyleProfile(res.profile);
+    }).catch(() => {});
+  }, [token, activeProject?.id, demoMode]);
 
   async function handleAuth(nextMode: "register" | "login") {
     if (demoMode) {
@@ -610,6 +641,19 @@ export default function App() {
     setLanguage(nextLanguage);
       pushTerminalLogs([`[Language] Switched to ${getLanguageMeta(nextLanguage).label}`], 24, false);
   }
+
+  const handleReindexStyle = useCallback(async () => {
+    if (!token || !activeProject?.id) return;
+    setIsIndexingStyle(true);
+    try {
+      await api.reindexStyle(token, activeProject.id);
+      pushOutputLogs(["[Style DNA] Manual codebase style re-indexing initiated"]);
+    } catch (err) {
+      setIsIndexingStyle(false);
+      const msg = err instanceof Error ? err.message : "Re-indexing failed";
+      pushOutputLogs([`[Style DNA] Error: ${msg}`]);
+    }
+  }, [token, activeProject?.id, pushOutputLogs]);
 
   async function handleChatSend(content: string) {
     setChatMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", content }]);
@@ -1322,6 +1366,9 @@ export default function App() {
                 isGenerating={isGenerating}
                 activeLanguageLabel={activeLanguageLabel}
                 activeFile={activeFile || null}
+                styleProfile={styleProfile}
+                onReindexStyle={handleReindexStyle}
+                isIndexingStyle={isIndexingStyle}
               />
               </div>
             </>

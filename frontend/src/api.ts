@@ -143,5 +143,20 @@ export const api = {
       headers: headers(token),
       body: JSON.stringify(body),
       signal
+    }),
+  getStyleProfile: (token: string, projectId: string) =>
+    request<{ profile: import("./types").StyleProfile }>(`/api/projects/${projectId}/style-profile`, {
+      headers: headers(token)
+    }),
+  updateStyleOverrides: (token: string, projectId: string, overrides: Record<string, any>) =>
+    request<{ profile: import("./types").StyleProfile }>(`/api/projects/${projectId}/style-profile/overrides`, {
+      method: "PATCH",
+      headers: headers(token),
+      body: JSON.stringify({ overrides })
+    }),
+  reindexStyle: (token: string, projectId: string) =>
+    request<{ ok: boolean; message: string; status: string }>(`/api/projects/${projectId}/style-profile/reindex`, {
+      method: "POST",
+      headers: headers(token)
     })
 };
